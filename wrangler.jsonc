@@ -7,14 +7,20 @@
   "assets": {
     // Built by @cloudflare/vite-plugin.
     "directory": "./dist/client",
-    // Because this Worker sets "main", requests that don't match a built file
-    // are handed to the Worker rather than being resolved by the asset router.
-    // The Worker therefore has to serve the SPA fallback itself, via this
-    // binding — see the catch-all in src/worker/index.ts. "single-page-application"
-    // is what makes that binding return index.html for an unknown path, which
-    // vue-router's history mode depends on.
+    // Lets the Worker serve assets itself — see the catch-all in
+    // src/worker/index.ts, which handles paths routed to the Worker by
+    // run_worker_first below but not matched by any of its routes.
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // The asset router runs BEFORE the Worker, and "single-page-application"
+    // makes it answer any browser *navigation* that doesn't match a built file
+    // with index.html — without invoking the Worker at all. That silently
+    // swallowed the whole OAuth flow: a top-level navigation carries
+    // Sec-Fetch-Mode: navigate, so /auth/<p>/start and the provider's redirect
+    // back to /auth/<p>/callback were served the SPA instead of reaching Hono.
+    // Listing them here routes those prefixes to the Worker first. Everything
+    // else keeps asset-first behaviour, which client-side routes rely on.
+    "run_worker_first": ["/auth/*", "/api/*"]
   },
   "kv_namespaces": [
     {
@@ -23,8 +29,8 @@
       //   npx wrangler kv namespace create SESSIONS --preview
       // then paste the returned ids here and run `npm run cf-typegen`.
       "binding": "SESSIONS",
-      "id": "REPLACE_WITH_KV_NAMESPACE_ID",
-      "preview_id": "REPLACE_WITH_KV_PREVIEW_ID"
+      "id": "d8cb0bc5a3774b06a378e2d3c4cd8a85",
+      "preview_id": "986e3ef1fdd14523898e165acee09a5d"
     }
   ],
   "observability": {
