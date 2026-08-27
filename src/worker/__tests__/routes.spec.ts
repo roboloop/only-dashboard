@@ -276,6 +276,392 @@ describe('disconnect and logout', () => {
   })
 })
 
+/** Seeds a session directly in KV with the given connections. */
+async function seedSession(connections: Record<string, unknown>) {
+  const res = await app.request(`${BASE}/auth/twitch/start`, {}, env)
+  const sid = sidFrom(res)
+  const kv = env.SESSIONS as unknown as ReturnType<typeof fakeKv>
+  kv.store.set(`session:${sid}`, JSON.stringify({ createdAt: Date.now(), connections }))
+  return { sid, kv, headers: { cookie: `sid=${sid}` } }
+}
+
+function token(scope: string | null) {
+  return {
+    accessToken: 'SECRET-ACCESS',
+    refreshToken: 'SECRET-REFRESH',
+    expiresAt: Date.now() + 3_600_000,
+    scope,
+  }
+}
+
+/**
+ * Stubs the platforms' APIs, longest URL prefix first, recording every call.
+ * A route value that is a number responds with that status and no body.
+ */
+function platformFetch(routes: Record<string, unknown>) {
+  const calls: { url: string; method: string; body: string | null }[] = []
+  vi.stubGlobal('fetch', (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: typeof init?.body === 'string' ? init.body : null,
+    })
+
+    const match = Object.keys(routes)
+      .sort((a, b) => b.length - a.length)
+      .find((key) => url.startsWith(key))
+    if (!match) return new Response('{}', { status: 404 })
+
+    const value = routes[match]
+    if (typeof value === 'number') return new Response('{}', { status: value })
+    return new Response(JSON.stringify(value), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as unknown as typeof fetch)
+  return calls
+}
+
+describe('PATCH /api/stream/title', () => {
+  it('requires a session', async () => {
+    const res = await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', body: JSON.stringify({ title: 'T' }) },
+      env,
+    )
+    expect(res.status).toBe(401)
+  })
+
+  it('rejects an empty title', async () => {
+    const { headers } = await seedSession({ twitch: token('channel:manage:broadcast') })
+
+    const res = await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: '   ' }) },
+      env,
+    )
+    expect(res.status).toBe(400)
+  })
+
+  it('pushes to every connected platform and records history', async () => {
+    const { headers, kv, sid } = await seedSession({
+      twitch: token('channel:manage:broadcast'),
+      kick: token('user:read channel:read channel:write'),
+    })
+    const calls = platformFetch({
+      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'S' }] },
+      'https://api.twitch.tv/helix/channels': {},
+      'https://api.kick.com/public/v1/channels': {},
+    })
+
+    const res = await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: 'New title' }) },
+      env,
+    )
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { results: { id: string; ok: boolean }[] }
+    expect(body.results).toEqual([
+      { id: 'twitch', ok: true, error: null, disconnected: false },
+      { id: 'kick', ok: true, error: null, disconnected: false },
+    ])
+
+    const patches = calls.filter((call) => call.method === 'PATCH')
+    expect(patches).toHaveLength(2)
+    const twitchPatch = patches.find((call) => call.url.includes('twitch.tv'))!
+    const kickPatch = patches.find((call) => call.url.includes('kick.com'))!
+    expect(JSON.parse(twitchPatch.body!)).toEqual({ title: 'New title' })
+    expect(JSON.parse(kickPatch.body!)).toEqual({ stream_title: 'New title' })
+
+    const history = JSON.parse(kv.store.get(`history:${sid}`)!) as {
+      titles: { text: string; pinned: boolean }[]
+    }
+    expect(history.titles).toHaveLength(1)
+    expect(history.titles[0]!.text).toBe('New title')
+  })
+
+  it('keeps other platforms’ successes when one platform fails', async () => {
+    const { headers } = await seedSession({
+      twitch: token('channel:manage:broadcast'),
+      kick: token('channel:write'),
+    })
+    platformFetch({
+      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'S' }] },
+      'https://api.twitch.tv/helix/channels': {},
+      'https://api.kick.com/public/v1/channels': 500,
+    })
+
+    const res = await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: 'T' }) },
+      env,
+    )
+
+    const body = (await res.json()) as { results: { id: string; ok: boolean; error: string | null }[] }
+    expect(body.results.find((r) => r.id === 'twitch')!.ok).toBe(true)
+    expect(body.results.find((r) => r.id === 'kick')!.ok).toBe(false)
+    expect(body.results.find((r) => r.id === 'kick')!.error).toContain('Kick')
+  })
+
+  it('refuses to push through a token that predates the write scopes', async () => {
+    const { headers } = await seedSession({ twitch: token(null) })
+    const calls = platformFetch({})
+
+    const res = await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: 'T' }) },
+      env,
+    )
+
+    const body = (await res.json()) as { results: { ok: boolean; error: string }[] }
+    expect(body.results[0]!.ok).toBe(false)
+    expect(body.results[0]!.error).toContain('Reconnect')
+    // The doomed call was never made.
+    expect(calls).toHaveLength(0)
+  })
+
+  it('never includes a token in the save response', async () => {
+    const { headers } = await seedSession({ twitch: token('channel:manage:broadcast') })
+    platformFetch({
+      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'S' }] },
+      'https://api.twitch.tv/helix/channels': {},
+    })
+
+    const res = await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: 'T' }) },
+      env,
+    )
+
+    const text = await res.text()
+    expect(text).not.toContain('SECRET-ACCESS')
+    expect(text).not.toContain('SECRET-REFRESH')
+  })
+})
+
+describe('PATCH /api/stream/category', () => {
+  it('pushes each platform its own picked category and records history', async () => {
+    const { headers, kv, sid } = await seedSession({
+      twitch: token('channel:manage:broadcast'),
+    })
+    const calls = platformFetch({
+      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'S' }] },
+      'https://api.twitch.tv/helix/channels': {},
+    })
+
+    const res = await app.request(
+      `${BASE}/api/stream/category`,
+      {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          picks: { twitch: { id: '743', name: 'Chess', imageUrl: null } },
+        }),
+      },
+      env,
+    )
+
+    expect(res.status).toBe(200)
+    const patch = calls.find((call) => call.method === 'PATCH')!
+    expect(JSON.parse(patch.body!)).toEqual({ game_id: '743' })
+
+    const history = JSON.parse(kv.store.get(`history:${sid}`)!) as {
+      categories: { twitch: { category: { name: string } }[] }
+    }
+    expect(history.categories.twitch[0]!.category.name).toBe('Chess')
+  })
+
+  it('rejects a request with no usable pick', async () => {
+    const { headers } = await seedSession({ twitch: token('channel:manage:broadcast') })
+
+    const res = await app.request(
+      `${BASE}/api/stream/category`,
+      { method: 'PATCH', headers, body: JSON.stringify({ picks: { youtube: { id: '1', name: 'X' } } }) },
+      env,
+    )
+    expect(res.status).toBe(400)
+  })
+})
+
+describe('GET /api/categories/search', () => {
+  it('fans out to connected platforms and keys results by provider', async () => {
+    const { headers } = await seedSession({
+      twitch: token('channel:manage:broadcast'),
+      kick: token('channel:write'),
+    })
+    platformFetch({
+      'https://api.twitch.tv/helix/search/categories': {
+        data: [{ id: '1', name: 'Elden Ring', box_art_url: '' }],
+      },
+      'https://api.kick.com/public/v1/categories': {
+        data: [{ id: 7, name: 'Elden Ring' }],
+      },
+    })
+
+    const res = await app.request(`${BASE}/api/categories/search?q=elden`, { headers }, env)
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      results: Record<string, { id: string; name: string }[]>
+    }
+    expect(body.results.twitch![0]!.name).toBe('Elden Ring')
+    expect(body.results.kick![0]!.id).toBe('7')
+    expect(body.results.vkvideo).toBeUndefined()
+  })
+
+  it('narrows to one platform with ?provider=', async () => {
+    const { headers } = await seedSession({
+      twitch: token('channel:manage:broadcast'),
+      kick: token('channel:write'),
+    })
+    const calls = platformFetch({
+      'https://api.kick.com/public/v1/categories': { data: [] },
+    })
+
+    const res = await app.request(
+      `${BASE}/api/categories/search?q=elden&provider=kick`,
+      { headers },
+      env,
+    )
+
+    expect(res.status).toBe(200)
+    expect(calls.every((call) => call.url.startsWith('https://api.kick.com'))).toBe(true)
+  })
+
+  it('requires a query', async () => {
+    const { headers } = await seedSession({ twitch: token('channel:manage:broadcast') })
+    const res = await app.request(`${BASE}/api/categories/search?q=`, { headers }, env)
+    expect(res.status).toBe(400)
+  })
+})
+
+describe('last-pushed backfill', () => {
+  const offlineKick = {
+    data: [
+      {
+        slug: 'streamer',
+        stream_title: '',
+        category: { id: 0, name: '', thumbnail: '' },
+        stream: { is_live: false },
+      },
+    ],
+  }
+
+  async function saveTitleAndCategory(headers: Record<string, string>) {
+    platformFetch({ 'https://api.kick.com/public/v1/channels': {} })
+    await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: 'Saved title' }) },
+      env,
+    )
+    await app.request(
+      `${BASE}/api/stream/category`,
+      {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ picks: { kick: { id: '5', name: 'Elden Ring', imageUrl: null } } }),
+      },
+      env,
+    )
+  }
+
+  it('keeps saved values on /api/me when Kick reads back offline zero-values', async () => {
+    const { headers } = await seedSession({ kick: token('channel:write') })
+    await saveTitleAndCategory(headers)
+
+    platformFetch({ 'https://api.kick.com/public/v1/channels': offlineKick })
+    const res = await app.request(`${BASE}/api/me`, { headers }, env)
+
+    const body = (await res.json()) as MeResponse
+    const kick = body.providers.find((p) => p.id === 'kick')!
+    expect(kick.streamTitle).toBe('Saved title')
+    expect(kick.category?.name).toBe('Elden Ring')
+  })
+
+  it('prefers platform-provided values over the remembered push', async () => {
+    const { headers } = await seedSession({ kick: token('channel:write') })
+    await saveTitleAndCategory(headers)
+
+    platformFetch({
+      'https://api.kick.com/public/v1/channels': {
+        data: [
+          {
+            slug: 'streamer',
+            stream_title: 'Live title',
+            category: { id: 9, name: 'Just Chatting' },
+            stream: { is_live: true },
+          },
+        ],
+      },
+    })
+    const res = await app.request(`${BASE}/api/me`, { headers }, env)
+
+    const body = (await res.json()) as MeResponse
+    const kick = body.providers.find((p) => p.id === 'kick')!
+    expect(kick.streamTitle).toBe('Live title')
+    expect(kick.category?.name).toBe('Just Chatting')
+  })
+})
+
+describe('history', () => {
+  it('returns the empty shape before anything was saved', async () => {
+    const { headers } = await seedSession({})
+    const res = await app.request(`${BASE}/api/history`, { headers }, env)
+
+    expect(await res.json()).toEqual({
+      titles: [],
+      categories: { twitch: [], kick: [], vkvideo: [] },
+    })
+  })
+
+  it('pins a title and sorts pinned entries first', async () => {
+    const { headers } = await seedSession({ twitch: token('channel:manage:broadcast') })
+    platformFetch({
+      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'S' }] },
+      'https://api.twitch.tv/helix/channels': {},
+    })
+
+    await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: 'First' }) },
+      env,
+    )
+    await app.request(
+      `${BASE}/api/stream/title`,
+      { method: 'PATCH', headers, body: JSON.stringify({ title: 'Second' }) },
+      env,
+    )
+
+    const before = (await (
+      await app.request(`${BASE}/api/history`, { headers }, env)
+    ).json()) as { titles: { id: string; text: string; pinned: boolean }[] }
+    expect(before.titles.map((t) => t.text)).toEqual(['Second', 'First'])
+
+    const first = before.titles.find((t) => t.text === 'First')!
+    const res = await app.request(
+      `${BASE}/api/history/title/pin`,
+      { method: 'POST', headers, body: JSON.stringify({ id: first.id, pinned: true }) },
+      env,
+    )
+
+    const after = (await res.json()) as { titles: { text: string; pinned: boolean }[] }
+    expect(after.titles.map((t) => t.text)).toEqual(['First', 'Second'])
+    expect(after.titles[0]!.pinned).toBe(true)
+  })
+
+  it('404s a pin for an unknown entry', async () => {
+    const { headers } = await seedSession({})
+    const res = await app.request(
+      `${BASE}/api/history/title/pin`,
+      { method: 'POST', headers, body: JSON.stringify({ id: 'nope', pinned: true }) },
+      env,
+    )
+    expect(res.status).toBe(404)
+  })
+})
+
 describe('routing', () => {
   it('fails unknown /api paths as JSON, not as the SPA fallback', async () => {
     const res = await app.request(`${BASE}/api/nope`, {}, env)

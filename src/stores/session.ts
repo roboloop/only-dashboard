@@ -1,6 +1,7 @@
 import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
-import type { MeResponse, ProviderId, ProviderState } from '@/shared/types'
+import { apiJson } from '@/lib/api'
+import type { Category, MeResponse, ProviderId, ProviderState, SaveOutcome } from '@/shared/types'
 
 /**
  * The connection state of every platform, read from /api/me.
@@ -14,24 +15,56 @@ export const useSessionStore = defineStore('session', () => {
   const error = ref<string | null>(null)
   const loading = ref(false)
   const loaded = ref(false)
+  const fetchedAt = ref<number | null>(null)
 
   const connectedCount = computed(() => providers.value.filter((p) => p.connected).length)
+
+  /** The handle shown in the header — the first connected account's name. */
+  const handle = computed(
+    () => providers.value.find((p) => p.connected && p.displayName)?.displayName ?? null,
+  )
 
   async function refresh(): Promise<void> {
     loading.value = true
     error.value = null
 
     try {
-      const response = await fetch('/api/me', { headers: { accept: 'application/json' } })
-      if (!response.ok) throw new Error(`Could not load connections (${response.status})`)
-
-      const body = (await response.json()) as MeResponse
+      const body = await apiJson<MeResponse>('/api/me')
       providers.value = body.providers
+      fetchedAt.value = body.fetchedAt
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)
     } finally {
       loading.value = false
       loaded.value = true
+    }
+  }
+
+  function patchProvider(id: ProviderId, patch: Partial<ProviderState>): void {
+    providers.value = providers.value.map((p) => (p.id === id ? { ...p, ...patch } : p))
+  }
+
+  /**
+   * Applies a save's per-platform outcomes to the cards optimistically:
+   * successes show the new title/category immediately, failures surface inline
+   * on that one card, and a dropped connection flips the card to CONNECT.
+   */
+  function applyOutcomes(
+    outcomes: SaveOutcome[],
+    change: { title?: string; picks?: Partial<Record<ProviderId, Category>> },
+  ): void {
+    for (const outcome of outcomes) {
+      if (outcome.disconnected) {
+        patchProvider(outcome.id, { connected: false, error: outcome.error })
+      } else if (!outcome.ok) {
+        patchProvider(outcome.id, { error: outcome.error })
+      } else {
+        patchProvider(outcome.id, {
+          error: null,
+          ...(change.title !== undefined ? { streamTitle: change.title } : {}),
+          ...(change.picks?.[outcome.id] ? { category: change.picks[outcome.id] } : {}),
+        })
+      }
     }
   }
 
@@ -45,5 +78,17 @@ export const useSessionStore = defineStore('session', () => {
     await refresh()
   }
 
-  return { providers, error, loading, loaded, connectedCount, refresh, disconnect, logout }
+  return {
+    providers,
+    error,
+    loading,
+    loaded,
+    fetchedAt,
+    connectedCount,
+    handle,
+    refresh,
+    applyOutcomes,
+    disconnect,
+    logout,
+  }
 })

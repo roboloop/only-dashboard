@@ -1,6 +1,14 @@
+import type { Category } from '../../shared/types'
 import type { AppEnv } from '../env'
 import { OAuthError } from './oauth'
-import type { Provider, ProviderStatus } from './types'
+import type { Provider, ProviderStatus, StreamPatch } from './types'
+
+interface VkCategory {
+  id?: string
+  title?: string
+  type?: string
+  cover_url?: string
+}
 
 interface VkCurrentUser {
   data?: {
@@ -15,8 +23,14 @@ interface VkChannel {
     stream?: {
       title?: string
       status?: string
-      category?: { title?: string } | null
+      category?: VkCategory | null
     } | null
+  }
+}
+
+interface VkCategorySearch {
+  data?: {
+    categories?: VkCategory[]
   }
 }
 
@@ -29,8 +43,8 @@ const API = 'https://api.live.vkvideo.ru'
  *  - scopes are comma-separated rather than space-separated;
  *  - `redirect_uri` is required on refresh as well as on the initial exchange.
  *
- * Reading a title needs no scopes. `channel:stream:settings` would be required
- * to *change* one via POST /v1/channel/stream/edit.
+ * `channel:stream:settings` is required to change the stream via
+ * POST /v1/channel/stream/edit; reading needs no scopes.
  */
 export const vkvideo: Provider = {
   id: 'vkvideo',
@@ -38,11 +52,12 @@ export const vkvideo: Provider = {
   authorizeUrl: 'https://auth.live.vkvideo.ru/app/oauth2/authorize',
   tokenUrl: `${API}/oauth/server/token`,
   revokeUrl: `${API}/oauth/server/revoke`,
-  scopes: [],
+  scopes: ['channel:stream:settings'],
   scopeSeparator: ',',
   clientAuth: 'basic',
   usesPkce: false,
   refreshNeedsRedirectUri: true,
+  writeScopes: ['channel:stream:settings'],
 
   credentials: (env: AppEnv) => ({
     clientId: env.VKVIDEO_CLIENT_ID,
@@ -50,11 +65,9 @@ export const vkvideo: Provider = {
   }),
 
   async fetchStatus(accessToken: string): Promise<ProviderStatus> {
-    const headers = { authorization: `Bearer ${accessToken}`, accept: 'application/json' }
-
     // VK has no "my channel" shortcut: resolve the user's own channel url first,
     // then read the stream from it.
-    const me = await vkGet<VkCurrentUser>(`${API}/v1/current_user`, headers)
+    const me = await vkGet<VkCurrentUser>(`${API}/v1/current_user`, accessToken)
     const channelUrl = me.data?.channel?.url
     const nick = me.data?.user?.nick ?? null
 
@@ -66,20 +79,98 @@ export const vkvideo: Provider = {
 
     const channel = await vkGet<VkChannel>(
       `${API}/v1/channel?channel_url=${encodeURIComponent(channelUrl)}`,
-      headers,
+      accessToken,
     )
+    const stream = channel.data?.stream
 
     return {
       displayName: channel.data?.channel?.nick ?? nick,
-      streamTitle: channel.data?.stream?.title || null,
-      isLive: channel.data?.stream?.status === 'started',
-      category: channel.data?.stream?.category?.title || null,
+      streamTitle: stream?.title || null,
+      isLive: stream?.status === 'started',
+      category: toCategory(stream?.category),
+    }
+  },
+
+  async searchCategories(accessToken: string, _env: AppEnv, query: string): Promise<Category[]> {
+    // `type` is a required parameter, so both kinds take a request each.
+    const [games, irl] = await Promise.all(
+      (['game', 'irl'] as const).map((type) =>
+        vkGet<VkCategorySearch>(
+          `${API}/v1/category/search?query=${encodeURIComponent(query)}&type=${type}&limit=10`,
+          accessToken,
+        ),
+      ),
+    )
+
+    return [...(games?.data?.categories ?? []), ...(irl?.data?.categories ?? [])]
+      .map(toCategory)
+      .filter((category): category is Category => category !== null)
+  },
+
+  async updateStream(accessToken: string, _env: AppEnv, patch: StreamPatch): Promise<void> {
+    const me = await vkGet<VkCurrentUser>(`${API}/v1/current_user`, accessToken)
+    const channelUrl = me.data?.channel?.url
+    if (!channelUrl) {
+      throw new OAuthError('This VK account has no channel yet')
+    }
+
+    // The edit endpoint's partial-update semantics are not documented, so read
+    // the current stream and always send both fields: a title-only save must
+    // not clear the category, nor the other way around.
+    const channel = await vkGet<VkChannel>(
+      `${API}/v1/channel?channel_url=${encodeURIComponent(channelUrl)}`,
+      accessToken,
+    )
+    const current = channel.data?.stream
+
+    const stream: Record<string, unknown> = {}
+    const title = patch.title ?? current?.title
+    if (title !== undefined) stream.title = title
+
+    const category = patch.category
+      ? {
+          id: patch.category.id,
+          title: patch.category.name,
+          type: patch.category.kind ?? 'game',
+          cover_url: patch.category.imageUrl ?? '',
+        }
+      : current?.category
+    if (category) stream.category = category
+
+    const response = await fetch(
+      `${API}/v1/channel/stream/edit?channel_url=${encodeURIComponent(channelUrl)}`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ stream }),
+      },
+    )
+
+    if (!response.ok) {
+      throw new OAuthError('VK Video API error', response.status)
     }
   },
 }
 
-async function vkGet<T>(url: string, headers: Record<string, string>): Promise<T> {
-  const response = await fetch(url, { headers })
+function toCategory(raw: VkCategory | null | undefined): Category | null {
+  if (!raw?.id || !raw.title) return null
+
+  return {
+    id: raw.id,
+    name: raw.title,
+    imageUrl: raw.cover_url || null,
+    kind: raw.type === 'irl' ? 'irl' : 'game',
+  }
+}
+
+async function vkGet<T>(url: string, accessToken: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+  })
 
   if (!response.ok) {
     // VK error bodies are { error, error_description }; error_description is

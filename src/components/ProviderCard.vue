@@ -1,123 +1,200 @@
 <script setup lang="ts">
-import type { ProviderState } from '@/shared/types'
+import type { ProviderId, ProviderState } from '@/shared/types'
 
 defineProps<{ provider: ProviderState; busy?: boolean }>()
 defineEmits<{ disconnect: [] }>()
+
+/** Platform colors appear only as the 2px left border (and list-header dots). */
+const PLATFORM_COLORS: Record<ProviderId, string> = {
+  twitch: 'var(--platform-twitch)',
+  kick: 'var(--platform-kick)',
+  vkvideo: 'var(--platform-vk)',
+}
 </script>
 
 <template>
-  <article class="card" :class="{ 'is-connected': provider.connected }">
-    <header>
-      <h3>{{ provider.label }}</h3>
-      <span v-if="provider.connected && provider.isLive" class="badge live">Live</span>
-      <span v-else-if="provider.connected" class="badge">Offline</span>
-    </header>
+  <article class="card" :style="{ borderLeftColor: PLATFORM_COLORS[provider.id] }">
+    <div class="head">
+      <div class="name">{{ provider.label }}</div>
+      <div v-if="provider.connected && provider.isLive" class="status live">
+        <span class="dot"></span>LIVE
+      </div>
+      <div v-else-if="provider.connected" class="status offline">OFFLINE</div>
+      <div v-else class="status none">NOT CONNECTED</div>
+    </div>
 
-    <!-- Connect must be a real navigation, not a fetch: the OAuth consent
-         screen has to render as a top-level page. -->
-    <template v-if="!provider.connected">
-      <p class="muted">Not connected.</p>
-      <a class="button" :href="`/auth/${provider.id}/start`">Connect {{ provider.label }}</a>
-    </template>
+    <div class="handle" :class="{ empty: !provider.displayName }">
+      {{ provider.displayName ? `@${provider.displayName}` : '—' }}
+    </div>
 
-    <template v-else>
-      <dl>
-        <dt>Account</dt>
-        <dd>{{ provider.displayName ?? '—' }}</dd>
+    <div class="stream">
+      <div class="title" :class="{ empty: !provider.streamTitle }">
+        {{ provider.streamTitle ?? 'No title' }}
+      </div>
+      <div class="category" :class="{ empty: !provider.category }">
+        {{ provider.category?.name ?? '—' }}
+      </div>
+    </div>
 
-        <dt>Stream title</dt>
-        <dd class="title">
-          <template v-if="provider.streamTitle">{{ provider.streamTitle }}</template>
-          <span v-else class="muted">No title set</span>
-        </dd>
+    <p v-if="provider.error" class="note error-note">{{ provider.error }}</p>
+    <p v-else-if="provider.connected && provider.needsReauth" class="note warning-note">
+      New permissions needed — reconnect to save changes
+    </p>
 
-        <template v-if="provider.category">
-          <dt>Category</dt>
-          <dd>{{ provider.category }}</dd>
-        </template>
-      </dl>
-
-      <p v-if="provider.error" class="error">{{ provider.error }}</p>
-
-      <button type="button" :disabled="busy" @click="$emit('disconnect')">Disconnect</button>
-    </template>
-
-    <p v-if="!provider.connected && provider.error" class="error">{{ provider.error }}</p>
+    <div class="actions">
+      <!-- Connect must be a real navigation, not a fetch: the OAuth consent
+           screen has to render as a top-level page. -->
+      <a v-if="!provider.connected" class="action connect" :href="`/auth/${provider.id}/start`">
+        CONNECT
+      </a>
+      <template v-else>
+        <a
+          v-if="provider.needsReauth"
+          class="action connect"
+          :href="`/auth/${provider.id}/start`"
+        >
+          RECONNECT
+        </a>
+        <button
+          type="button"
+          class="action disconnect"
+          :disabled="busy"
+          @click="$emit('disconnect')"
+        >
+          DISCONNECT
+        </button>
+      </template>
+    </div>
   </article>
 </template>
 
 <style scoped>
 .card {
+  border: 1px solid var(--border);
+  border-left-width: 2px;
+  border-radius: 6px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  margin: 0;
+  gap: 11px;
 }
 
-header {
+.head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: space-between;
 }
 
-h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--text);
+.name {
+  font: 600 var(--fs-input) / 1 var(--font-sans);
 }
 
-.badge {
-  font-size: 0.6875rem;
-  text-transform: uppercase;
+.status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 var(--fs-micro) / 1 var(--font-sans);
   letter-spacing: 0.06em;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
 }
 
-.badge.live {
-  color: var(--bg);
+.status.live {
+  color: var(--accent);
+}
+
+.status.offline {
+  color: var(--text-dim);
+}
+
+.status.none {
+  color: var(--text-faint);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   background: var(--accent);
-  border-color: var(--accent);
 }
 
-dl {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.35rem 1rem;
-  margin: 0;
+.handle {
+  font: 400 var(--fs-meta) / 1 var(--font-sans);
+  color: var(--text-faint);
 }
 
-dt {
-  color: var(--text-muted);
-  font-size: 0.8125rem;
+.handle.empty {
+  color: var(--text-empty);
 }
 
-dd {
-  margin: 0;
+.stream {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 2px;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.title {
+  font: 400 var(--fs-body) / 1.45 var(--font-sans);
+  color: var(--text-body);
   overflow-wrap: anywhere;
 }
 
-dd.title {
-  font-weight: 500;
+.category {
+  font: 400 var(--fs-meta) / 1.3 var(--font-sans);
+  color: var(--text-muted);
 }
 
-.button {
-  align-self: flex-start;
-  display: inline-block;
+.title.empty,
+.category.empty {
+  color: var(--text-empty);
+}
+
+.note {
+  font: 400 var(--fs-meta) / 1.4 var(--font-sans);
+}
+
+.error-note {
+  color: var(--error);
+}
+
+.warning-note {
+  color: var(--warning);
+}
+
+.actions {
+  display: flex;
+  gap: 16px;
+  margin-top: auto;
+}
+
+.action {
+  font: 500 var(--fs-micro) / 1 var(--font-sans);
+  letter-spacing: 0.06em;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
   text-decoration: none;
-  color: var(--bg);
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 0.375rem;
-  padding: 0.35rem 0.8rem;
 }
 
-button {
-  align-self: flex-start;
+.action.connect {
+  color: var(--accent);
+}
+
+.action.connect:hover {
+  color: var(--accent-hover);
+}
+
+.action.disconnect {
+  color: var(--text-dim);
+}
+
+.action.disconnect:hover {
+  color: var(--error);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 </style>

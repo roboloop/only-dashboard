@@ -50,7 +50,11 @@ platform; `src/worker/providers/oauth.ts` handles the rest for all three.
 | PKCE | no | **yes (S256)** | no |
 | Scope separator | space | space | **comma** |
 | `redirect_uri` on refresh | no | no | **required** |
-| Scopes needed to read a title | **none** | `user:read channel:read` | **none** |
+| Scopes requested | `channel:manage:broadcast` | `user:read channel:read channel:write` | `channel:stream:settings` |
+
+Reading a title needs no scopes anywhere; the requested scopes exist for *writing* the title and
+category back (`updateStream`). A token minted before the write scopes were requested still reads
+fine — `/api/me` flags it as `needsReauth` and the card offers Reconnect instead of a doomed save.
 
 The refresh column is the sharp edge: VK is the only one that needs `redirect_uri` when refreshing,
 and omitting it fails an hour later, not at connect time.
@@ -130,6 +134,9 @@ request
   │    ("/auth/*", "/api/*")                      ├─ /auth/<p>/start     → 302 to the platform
   │                                               ├─ /auth/<p>/callback  → exchange code, 302 to /
   │                                               ├─ /api/me             → per-platform state
+  │                                               ├─ /api/stream/…       → title/category saves (fan-out)
+  │                                               ├─ /api/categories/…   → per-platform category search
+  │                                               ├─ /api/history…       → title/category history + pins
   │                                               ├─ /api/auth/<p>/…     → disconnect, logout
   │                                               ├─ /api/* (unmatched)  → JSON 404
   │                                               └─ *                   → env.ASSETS
@@ -177,12 +184,19 @@ src/
   worker/
     index.ts             routes
     session.ts           cookie + KV session and OAuth transaction storage
-    status.ts            tokens → display state, with refresh-on-demand
+    history.ts           KV-backed title/category history with pinning
+    status.ts            tokens → display state, with refresh-on-demand (withFreshTokens)
     crypto.ts            base64url, random tokens, PKCE S256
     env.ts               bindings + the six secrets
     providers/           oauth.ts (shared flow) + twitch/kick/vkvideo
-  stores/session.ts      Pinia store over /api/me
-  components/ProviderCard.vue
+  stores/
+    session.ts           Pinia store over /api/me
+    stream.ts            title/category drafts, per-platform search, history
+  components/
+    ProviderCard.vue     one platform's status micro-card
+    TitleBlock.vue       shared title editor + history
+    CategoryBlock.vue    category search + per-platform selectors + recents
+    CategorySelector.vue one platform's candidate column
   views/DashboardView.vue
 ```
 
@@ -222,9 +236,11 @@ and the production callback URLs registered with all three platforms.
 
 ## Extending
 
-Writing the title back is one method per provider behind the same registry, and only the scope lists
-change: Kick `channel:write`, Twitch `channel:manage:broadcast`, VK
-`POST /v1/channel/stream/edit` with `channel:stream:settings`.
+Writing the title and category back is implemented: `updateStream` and `searchCategories` are one
+method per provider behind the same registry (Kick `channel:write`, Twitch
+`channel:manage:broadcast`, VK `POST /v1/channel/stream/edit` with `channel:stream:settings`), and
+`PATCH /api/stream/title` / `PATCH /api/stream/category` fan out to every connected platform with
+per-platform results — one platform failing never blocks the others.
 
 Adding a platform is a new file in `src/worker/providers/` plus an entry in its registry — the flow
 itself needs no changes unless the platform differs along some axis beyond the four in the table.
