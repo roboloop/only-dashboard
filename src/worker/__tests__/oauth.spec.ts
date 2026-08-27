@@ -60,11 +60,10 @@ describe('authorize URLs', () => {
   })
 
   it('omits scope entirely when a provider needs none', () => {
-    const twitch = new URL(
-      buildAuthorizeUrl(PROVIDERS.twitch, env, { redirectUri: REDIRECT, state: 's' }),
-    )
+    const scopeless = { ...PROVIDERS.twitch, scopes: [] }
+    const url = new URL(buildAuthorizeUrl(scopeless, env, { redirectUri: REDIRECT, state: 's' }))
     // scope= would request "no scopes" explicitly, which is not the same thing.
-    expect(twitch.searchParams.has('scope')).toBe(false)
+    expect(url.searchParams.has('scope')).toBe(false)
   })
 
   it('joins Kick scopes with spaces', () => {
@@ -75,7 +74,7 @@ describe('authorize URLs', () => {
         codeChallenge: 'c',
       }),
     )
-    expect(url.searchParams.get('scope')).toBe('user:read channel:read')
+    expect(url.searchParams.get('scope')).toBe('user:read channel:read channel:write')
   })
 
   it('sends the state and redirect_uri it was given', () => {

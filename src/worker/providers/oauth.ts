@@ -161,10 +161,23 @@ async function requestToken(
     accessToken: parsed.access_token,
     refreshToken: parsed.refresh_token ?? null,
     expiresAt: Date.now() + (parsed.expires_in ?? DEFAULT_LIFETIME_SECONDS) * 1000,
-    scope: parsed.scope ?? null,
+    // Twitch returns scope as a JSON array; store one canonical string form.
+    scope: Array.isArray(parsed.scope) ? parsed.scope.join(' ') : (parsed.scope ?? null),
   }
 }
 
 export function isExpired(tokens: OAuthTokens, now = Date.now()): boolean {
   return tokens.expiresAt - EXPIRY_SKEW_MS <= now
+}
+
+/**
+ * Whether the stored token was granted every scope `updateStream` needs.
+ * Tokens minted before the write scopes were requested fail this and surface
+ * as a reconnect prompt rather than a doomed save.
+ */
+export function hasWriteScopes(provider: Provider, tokens: OAuthTokens): boolean {
+  if (provider.writeScopes.length === 0) return true
+
+  const granted = new Set((tokens.scope ?? '').split(/[,\s]+/).filter(Boolean))
+  return provider.writeScopes.every((scope) => granted.has(scope))
 }

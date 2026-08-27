@@ -1,4 +1,4 @@
-import type { ProviderId } from '../../shared/types'
+import type { Category, ProviderId } from '../../shared/types'
 import type { AppEnv } from '../env'
 
 /** What a provider can tell us about the user's current stream. */
@@ -6,7 +6,16 @@ export interface ProviderStatus {
   displayName: string | null
   streamTitle: string | null
   isLive: boolean
-  category: string | null
+  category: Category | null
+}
+
+/**
+ * A change to push to a platform. At least one field is set; a field left
+ * undefined must not be touched on the platform.
+ */
+export interface StreamPatch {
+  title?: string
+  category?: Category
 }
 
 /** Tokens as we persist them. `expiresAt` is absolute so it survives storage. */
@@ -48,8 +57,16 @@ export interface Provider {
   refreshNeedsRedirectUri: boolean
   /** Optional RFC 7009-style revocation, used on disconnect where available. */
   revokeUrl?: string
+  /**
+   * The subset of `scopes` that `updateStream` needs. Tokens minted before
+   * these scopes existed still read fine but cannot write — the dashboard
+   * shows a reconnect prompt instead of attempting a doomed save.
+   */
+  writeScopes: string[]
   credentials(env: AppEnv): { clientId: string; clientSecret: string }
   fetchStatus(accessToken: string, env: AppEnv): Promise<ProviderStatus>
+  searchCategories(accessToken: string, env: AppEnv, query: string): Promise<Category[]>
+  updateStream(accessToken: string, env: AppEnv, patch: StreamPatch): Promise<void>
 }
 
 /** Raw token endpoint response, common to all three platforms. */
@@ -58,5 +75,6 @@ export interface TokenResponse {
   refresh_token?: string
   expires_in?: number
   token_type?: string
-  scope?: string
+  /** Twitch returns this as a JSON array; the others as a delimited string. */
+  scope?: string | string[]
 }

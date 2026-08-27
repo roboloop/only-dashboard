@@ -11,14 +11,23 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-/** Answers each URL from a map, so multi-call providers can be exercised. */
+/**
+ * Answers each URL from a map (longest prefix wins, so `/v1/channel` cannot
+ * swallow `/v1/channel/stream/edit`), recording every request made.
+ */
 function routeFetch(routes: Record<string, unknown>) {
-  const seen: string[] = []
-  const mock = async (input: string | URL | Request) => {
+  const calls: { url: string; method: string; body: string | null }[] = []
+  const mock = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
-    seen.push(url)
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: typeof init?.body === 'string' ? init.body : null,
+    })
 
-    const match = Object.keys(routes).find((key) => url.startsWith(key))
+    const match = Object.keys(routes)
+      .sort((a, b) => b.length - a.length)
+      .find((key) => url.startsWith(key))
     if (!match) return new Response('{}', { status: 404 })
 
     return new Response(JSON.stringify(routes[match]), {
@@ -27,7 +36,7 @@ function routeFetch(routes: Record<string, unknown>) {
     })
   }
   vi.stubGlobal('fetch', mock as unknown as typeof fetch)
-  return seen
+  return calls
 }
 
 describe('twitch fetchStatus', () => {
@@ -35,9 +44,19 @@ describe('twitch fetchStatus', () => {
     routeFetch({
       'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'Streamer' }] },
       'https://api.twitch.tv/helix/channels': {
-        data: [{ broadcaster_id: '42', title: 'Playing something', game_name: 'Chess' }],
+        data: [
+          {
+            broadcaster_id: '42',
+            title: 'Playing something',
+            game_id: '743',
+            game_name: 'Chess',
+          },
+        ],
       },
       'https://api.twitch.tv/helix/streams': { data: [{ id: 'live-1' }] },
+      'https://api.twitch.tv/helix/games': {
+        data: [{ id: '743', name: 'Chess', box_art_url: 'https://img/{width}x{height}.jpg' }],
+      },
     })
 
     const status = await PROVIDERS.twitch.fetchStatus('token', env)
@@ -46,14 +65,16 @@ describe('twitch fetchStatus', () => {
       displayName: 'Streamer',
       streamTitle: 'Playing something',
       isLive: true,
-      category: 'Chess',
+      category: { id: '743', name: 'Chess', imageUrl: 'https://img/68x90.jpg' },
     })
   })
 
   it('reports offline when /streams returns nothing', async () => {
     routeFetch({
       'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'Streamer' }] },
-      'https://api.twitch.tv/helix/channels': { data: [{ title: 'Offline title', game_name: '' }] },
+      'https://api.twitch.tv/helix/channels': {
+        data: [{ title: 'Offline title', game_id: '', game_name: '' }],
+      },
       'https://api.twitch.tv/helix/streams': { data: [] },
     })
 
@@ -80,15 +101,46 @@ describe('twitch fetchStatus', () => {
   })
 })
 
+describe('twitch categories and updates', () => {
+  it('maps search results to shared categories', async () => {
+    const calls = routeFetch({
+      'https://api.twitch.tv/helix/search/categories': {
+        data: [{ id: '1', name: 'Elden Ring', box_art_url: 'https://art/er.jpg' }],
+      },
+    })
+
+    const results = await PROVIDERS.twitch.searchCategories('token', env, 'elden ring')
+
+    expect(calls[0]!.url).toContain('query=elden%20ring')
+    expect(results).toEqual([{ id: '1', name: 'Elden Ring', imageUrl: 'https://art/er.jpg' }])
+  })
+
+  it('PATCHes the channel keyed by the token holder’s own id', async () => {
+    const calls = routeFetch({
+      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'Streamer' }] },
+      'https://api.twitch.tv/helix/channels': {},
+    })
+
+    await PROVIDERS.twitch.updateStream('token', env, {
+      title: 'New title',
+      category: { id: '9', name: 'Chess', imageUrl: null },
+    })
+
+    const patch = calls.find((call) => call.method === 'PATCH')!
+    expect(patch.url).toContain('broadcaster_id=42')
+    expect(JSON.parse(patch.body!)).toEqual({ title: 'New title', game_id: '9' })
+  })
+})
+
 describe('kick fetchStatus', () => {
   it('reads the authenticated user’s own channel with no query parameters', async () => {
-    const seen = routeFetch({
+    const calls = routeFetch({
       'https://api.kick.com/public/v1/channels': {
         data: [
           {
             slug: 'streamer',
             stream_title: 'Kick stream',
-            category: { name: 'Just Chatting' },
+            category: { id: 5, name: 'Just Chatting', thumbnail: 'https://thumb.jpg' },
             stream: { is_live: true },
           },
         ],
@@ -97,12 +149,12 @@ describe('kick fetchStatus', () => {
 
     const status = await PROVIDERS.kick.fetchStatus('token', env)
 
-    expect(seen[0]).toBe('https://api.kick.com/public/v1/channels')
+    expect(calls[0]!.url).toBe('https://api.kick.com/public/v1/channels')
     expect(status).toEqual({
       displayName: 'streamer',
       streamTitle: 'Kick stream',
       isLive: true,
-      category: 'Just Chatting',
+      category: { id: '5', name: 'Just Chatting', imageUrl: 'https://thumb.jpg' },
     })
   })
 
@@ -118,30 +170,79 @@ describe('kick fetchStatus', () => {
     expect(status.isLive).toBe(false)
     expect(status.streamTitle).toBeNull()
   })
+
+  it('treats offline zero-values as absent, not as category 0', async () => {
+    // While offline, Kick returns Go zero values instead of nulls.
+    routeFetch({
+      'https://api.kick.com/public/v1/channels': {
+        data: [
+          {
+            slug: 'streamer',
+            stream_title: '',
+            category: { id: 0, name: '', thumbnail: '' },
+            stream: { is_live: false },
+          },
+        ],
+      },
+    })
+
+    const status = await PROVIDERS.kick.fetchStatus('token', env)
+
+    expect(status.streamTitle).toBeNull()
+    expect(status.category).toBeNull()
+  })
+})
+
+describe('kick categories and updates', () => {
+  it('sends the category id as a number', async () => {
+    const calls = routeFetch({ 'https://api.kick.com/public/v1/channels': {} })
+
+    await PROVIDERS.kick.updateStream('token', env, {
+      title: 'T',
+      category: { id: '5', name: 'Just Chatting', imageUrl: null },
+    })
+
+    expect(calls[0]!.method).toBe('PATCH')
+    expect(JSON.parse(calls[0]!.body!)).toEqual({ stream_title: 'T', category_id: 5 })
+  })
+
+  it('refuses a non-numeric category id instead of sending junk', async () => {
+    routeFetch({ 'https://api.kick.com/public/v1/channels': {} })
+
+    await expect(
+      PROVIDERS.kick.updateStream('token', env, {
+        category: { id: 'not-a-number', name: 'X', imageUrl: null },
+      }),
+    ).rejects.toThrow('Kick category id is not numeric')
+  })
 })
 
 describe('vkvideo fetchStatus', () => {
   it('resolves the channel url from current_user, then reads the stream', async () => {
-    const seen = routeFetch({
+    const calls = routeFetch({
       'https://api.live.vkvideo.ru/v1/current_user': {
         data: { channel: { url: 'my-channel' }, user: { nick: 'Nick' } },
       },
       'https://api.live.vkvideo.ru/v1/channel': {
         data: {
           channel: { nick: 'Channel Nick' },
-          stream: { title: 'VK stream', status: 'started', category: { title: 'Games' } },
+          stream: {
+            title: 'VK stream',
+            status: 'started',
+            category: { id: 'g1', title: 'Games', type: 'game', cover_url: 'https://cover.jpg' },
+          },
         },
       },
     })
 
     const status = await PROVIDERS.vkvideo.fetchStatus('token', env)
 
-    expect(seen[1]).toContain('channel_url=my-channel')
+    expect(calls[1]!.url).toContain('channel_url=my-channel')
     expect(status).toEqual({
       displayName: 'Channel Nick',
       streamTitle: 'VK stream',
       isLive: true,
-      category: 'Games',
+      category: { id: 'g1', name: 'Games', imageUrl: 'https://cover.jpg', kind: 'game' },
     })
   })
 
@@ -176,7 +277,7 @@ describe('vkvideo fetchStatus', () => {
   })
 
   it('url-encodes the channel url', async () => {
-    const seen = routeFetch({
+    const calls = routeFetch({
       'https://api.live.vkvideo.ru/v1/current_user': {
         data: { channel: { url: 'a b/c' }, user: { nick: 'n' } },
       },
@@ -185,6 +286,50 @@ describe('vkvideo fetchStatus', () => {
 
     await PROVIDERS.vkvideo.fetchStatus('token', env)
 
-    expect(seen[1]).toContain('channel_url=a%20b%2Fc')
+    expect(calls[1]!.url).toContain('channel_url=a%20b%2Fc')
+  })
+})
+
+describe('vkvideo categories and updates', () => {
+  it('searches both game and irl categories', async () => {
+    const calls = routeFetch({
+      'https://api.live.vkvideo.ru/v1/category/search': {
+        data: { categories: [{ id: 'g1', title: 'Games', type: 'game', cover_url: '' }] },
+      },
+    })
+
+    const results = await PROVIDERS.vkvideo.searchCategories('token', env, 'gam')
+
+    expect(calls.map((call) => call.url).join(' ')).toContain('type=game')
+    expect(calls.map((call) => call.url).join(' ')).toContain('type=irl')
+    expect(results).toHaveLength(2)
+    expect(results[0]).toEqual({ id: 'g1', name: 'Games', imageUrl: null, kind: 'game' })
+  })
+
+  it('preserves the current category when only the title changes', async () => {
+    const calls = routeFetch({
+      'https://api.live.vkvideo.ru/v1/current_user': {
+        data: { channel: { url: 'my-channel' }, user: { nick: 'n' } },
+      },
+      'https://api.live.vkvideo.ru/v1/channel/stream/edit': {},
+      'https://api.live.vkvideo.ru/v1/channel': {
+        data: {
+          stream: {
+            title: 'Old title',
+            status: 'started',
+            category: { id: 'c1', title: 'IRL Walk', type: 'irl', cover_url: '' },
+          },
+        },
+      },
+    })
+
+    await PROVIDERS.vkvideo.updateStream('token', env, { title: 'New title' })
+
+    const edit = calls.find((call) => call.url.includes('/stream/edit'))!
+    const body = JSON.parse(edit.body!) as {
+      stream: { title: string; category: { id: string } }
+    }
+    expect(body.stream.title).toBe('New title')
+    expect(body.stream.category.id).toBe('c1')
   })
 })

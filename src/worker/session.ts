@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
-import type { ProviderId } from '../shared/types'
+import type { Category, ProviderId } from '../shared/types'
 import { randomToken } from './crypto'
 import type { AppEnv } from './env'
 import type { OAuthTokens } from './providers/types'
@@ -15,9 +15,23 @@ export const SESSION_COOKIE = 'sid'
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30 // 30 days
 const OAUTH_TTL_SECONDS = 60 * 10 // one in-flight authorization
 
+/** What this app last successfully wrote to one platform. */
+export interface PushedState {
+  title?: string
+  category?: Category
+  at: number
+}
+
 export interface SessionData {
   createdAt: number
   connections: Partial<Record<ProviderId, OAuthTokens>>
+  /**
+   * Fallback display state per platform. Some platforms (Kick while offline)
+   * read back empty stream fields even though a write succeeded; when a read
+   * returns nothing, `/api/me` fills the gap from here. Platform-provided
+   * values always win.
+   */
+  lastPushed?: Partial<Record<ProviderId, PushedState>>
 }
 
 /** The server-side half of one in-flight authorization. */
