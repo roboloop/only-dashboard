@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "only-dashboard",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    // Built by @cloudflare/vite-plugin.
+    "directory": "./dist/client",
+    // Because this Worker sets "main", requests that don't match a built file
+    // are handed to the Worker rather than being resolved by the asset router.
+    // The Worker therefore has to serve the SPA fallback itself, via this
+    // binding — see the catch-all in src/worker/index.ts. "single-page-application"
+    // is what makes that binding return index.html for an unknown path, which
+    // vue-router's history mode depends on.
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "kv_namespaces": [
+    {
+      // Sessions and in-flight OAuth transactions. Create with:
+      //   npx wrangler kv namespace create SESSIONS
+      //   npx wrangler kv namespace create SESSIONS --preview
+      // then paste the returned ids here and run `npm run cf-typegen`.
+      "binding": "SESSIONS",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID",
+      "preview_id": "REPLACE_WITH_KV_PREVIEW_ID"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

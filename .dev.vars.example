@@ -1,0 +1,11 @@
+# Copy to .dev.vars and fill in. .dev.vars is gitignored — never commit real values.
+# For production set the same six with: npx wrangler secret put <NAME>
+
+TWITCH_CLIENT_ID=
+TWITCH_CLIENT_SECRET=
+
+KICK_CLIENT_ID=
+KICK_CLIENT_SECRET=
+
+VKVIDEO_CLIENT_ID=
+VKVIDEO_CLIENT_SECRET=
