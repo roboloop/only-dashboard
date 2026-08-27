@@ -102,24 +102,67 @@ same six with `npx wrangler secret put <NAME>`.
 Local `vite dev` and `wrangler dev` simulate KV, so the placeholder ids in `wrangler.jsonc` are
 enough to develop against — real ids are only needed to deploy.
 
+`wrangler.jsonc` is committed on purpose, KV ids included: namespace ids are resource identifiers,
+not credentials, and are inert without Cloudflare account auth. The actual secrets are the six OAuth
+values in `.dev.vars` (gitignored) and your Cloudflare API token — neither is in the repo.
+
+### Known dev-server quirk
+
+Editing `.dev.vars` or `wrangler.jsonc` **while `npm run dev` is running** can throw up a Vite error
+overlay:
+
+> Cannot read properties of null (reading 'invalidateTypeCache')
+
+It is harmless and self-clearing — dismiss it, or restart the dev server. `@cloudflare/vite-plugin`
+restarts Vite when either file changes, which resets `@vitejs/plugin-vue`'s lazily-resolved
+`compiler` to null, and the same file-change event can race into `handleHotUpdate` before the new
+instance's `buildStart` re-resolves it. Upstream has no null guard there as of `@vitejs/plugin-vue`
+6.0.8. It cannot affect a production build — `handleHotUpdate` only exists in dev — and
+`server.watch.ignored` is *not* the fix: the Cloudflare plugin needs that same watcher event to
+reload your secrets.
+
 ## Request flow
 
 ```
 request
-  └─ Worker  (src/worker/index.ts)
-       ├─ /auth/<provider>/start     → 302 to the platform
-       ├─ /auth/<provider>/callback  → exchange code, store tokens, 302 to /
-       ├─ /api/me                    → per-platform display state
-       ├─ /api/auth/<p>/disconnect   → revoke where supported, drop the connection
-       ├─ /api/* (unmatched)         → JSON 404
-       └─ *                          → env.ASSETS → dist/client (SPA fallback)
+  │
+  ├─ path matches assets.run_worker_first  ──▶  Worker (src/worker/index.ts)
+  │    ("/auth/*", "/api/*")                      ├─ /auth/<p>/start     → 302 to the platform
+  │                                               ├─ /auth/<p>/callback  → exchange code, 302 to /
+  │                                               ├─ /api/me             → per-platform state
+  │                                               ├─ /api/auth/<p>/…     → disconnect, logout
+  │                                               ├─ /api/* (unmatched)  → JSON 404
+  │                                               └─ *                   → env.ASSETS
+  │
+  └─ everything else  ──▶  asset router ──▶ dist/client
+                             └─ no matching file? → index.html (SPA fallback)
 ```
 
-Because the Worker sets `main`, requests that don't match a built file are handed to the **Worker**,
-not resolved by Cloudflare's asset router — hence the explicit `app.all('*', …)` at the end of
-`src/worker/index.ts`. Remove it and every client-side route 404s. The `/api/*` catch-all matters for
-the same reason: without it an unknown API path falls through to the SPA and a `fetch()` expecting
-JSON receives HTML.
+**The asset router runs before the Worker.** This is the single most surprising thing in the setup
+and it is easy to get wrong. With `not_found_handling: "single-page-application"`, the asset layer
+answers any browser *navigation* to an unmatched path with `index.html` and the Worker is never
+invoked. Setting `main` does not change that.
+
+That is why `assets.run_worker_first` in `wrangler.jsonc` lists `/auth/*` and `/api/*`. Without it,
+`/auth/<provider>/start` and the provider's redirect back to `/auth/<provider>/callback` are both
+served the SPA, and the entire OAuth flow dies with a vue-router "No match found" in the console.
+
+**Any new Worker route reachable by a top-level navigation must be added to `run_worker_first`.**
+`src/__tests__/routing-config.spec.ts` enforces this for every provider's start and callback path.
+
+The trap is that this is invisible to `curl` and to the Hono tests. The discriminator is the
+`Sec-Fetch-Mode: navigate` header, which only a real top-level navigation sends — `fetch`, XHR and
+plain `curl` all reach the Worker fine. To test a route the way a browser hits it:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Sec-Fetch-Mode: navigate' \
+  http://localhost:5173/auth/twitch/start     # 302, not 200
+```
+
+The Worker still ends with `app.all('*', …)` delegating to `env.ASSETS`, which covers paths routed to
+it by `run_worker_first` that none of its routes match. The `/api/*` JSON-404 catch-all matters
+separately: without it an unknown API path falls through to the SPA and a `fetch()` expecting JSON
+receives HTML.
 
 `/api/me` fans out to the connected platforms in parallel and each result is independent — one
 platform being down or token-expired renders as an error on that card, not a failed page. Tokens are
