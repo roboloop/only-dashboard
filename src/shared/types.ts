@@ -42,6 +42,11 @@ export interface ProviderState {
   /** Category / game, where the platform exposes one. */
   category: Category | null
   /**
+   * Deep link to the platform's own broadcast console. Null when disconnected,
+   * or when the platform keys the URL by a channel the account does not have.
+   */
+  dashboardUrl: string | null
+  /**
    * Connected, but the stored token predates the write scopes — saves would
    * fail until the user reconnects.
    */

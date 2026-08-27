@@ -138,6 +138,7 @@ app.get('/api/me', async (c) => {
         streamTitle: null,
         isLive: false,
         category: null,
+        dashboardUrl: null,
         needsReauth: false,
         error: null,
       })),

@@ -135,6 +135,7 @@ export async function resolveProvider(
             streamTitle: null,
             isLive: false,
             category: null,
+            dashboardUrl: null,
           }),
           needsReauth,
           error: call.error,
@@ -181,6 +182,7 @@ function disconnected(provider: Provider, error: string | null = null): Resolved
       streamTitle: null,
       isLive: false,
       category: null,
+      dashboardUrl: null,
       needsReauth: false,
       error,
     },
@@ -198,6 +200,7 @@ function connected(provider: Provider, status: ProviderStatus): ProviderState {
     streamTitle: status.streamTitle,
     isLive: status.isLive,
     category: status.category,
+    dashboardUrl: status.dashboardUrl,
     needsReauth: false,
     error: null,
   }

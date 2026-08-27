@@ -62,6 +62,9 @@ export const kick: Provider = {
             imageUrl: channel.category.thumbnail || null,
           }
         : null,
+      // Kick's console resolves the channel from the session, so the URL is
+      // the same for every account.
+      dashboardUrl: 'https://dashboard.kick.com/stream',
     }
   },
 

@@ -14,6 +14,7 @@ function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
     streamTitle: null,
     isLive: false,
     category: null,
+    dashboardUrl: null,
     needsReauth: false,
     error: null,
     ...overrides,
@@ -89,6 +90,25 @@ describe('DashboardView', () => {
     expect(wrapper.text()).toContain('LIVE')
     expect(wrapper.text()).toContain('Science & Technology')
     expect(wrapper.find('a[href="/auth/twitch/start"]').exists()).toBe(false)
+  })
+
+  it('links a connected card to that platform’s own console', async () => {
+    stubApi([
+      providerState({
+        connected: true,
+        displayName: 'Streamer',
+        dashboardUrl: 'https://dashboard.twitch.tv/u/streamer_tv/stream-manager',
+      }),
+      providerState({ id: 'kick', label: 'Kick', connected: true }),
+    ])
+    const wrapper = await mountView()
+
+    const link = wrapper.get('a.dashboard')
+    expect(link.attributes('href')).toBe('https://dashboard.twitch.tv/u/streamer_tv/stream-manager')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.text()).toContain('DASHBOARD')
+    // A platform that reported no url — like Kick here — offers no link.
+    expect(wrapper.findAll('a.dashboard')).toHaveLength(1)
   })
 
   it('pre-fills the title input with the current shared title', async () => {

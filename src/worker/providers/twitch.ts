@@ -6,6 +6,8 @@ import type { Provider, ProviderStatus, StreamPatch } from './types'
 interface TwitchUser {
   id: string
   display_name: string
+  /** The URL-safe channel name. Not always `display_name` lowercased. */
+  login: string
 }
 
 interface TwitchChannel {
@@ -93,6 +95,7 @@ export const twitch: Provider = {
       // /streams returns an entry only while actually broadcasting.
       isLive: stream !== null,
       category,
+      dashboardUrl: `https://dashboard.twitch.tv/u/${encodeURIComponent(user.login)}/stream-manager`,
     }
   },
 
