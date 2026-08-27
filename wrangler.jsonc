@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "only-dashboard",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    // Built by @cloudflare/vite-plugin.
+    "directory": "./dist/client",
+    // Because this Worker sets "main", requests that don't match a built file
+    // are handed to the Worker rather than being resolved by the asset router.
+    // The Worker therefore has to serve the SPA fallback itself, via this
+    // binding — see the catch-all in src/worker/index.ts. "single-page-application"
+    // is what makes that binding return index.html for an unknown path, which
+    // vue-router's history mode depends on.
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
