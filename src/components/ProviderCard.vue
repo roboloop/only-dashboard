@@ -49,6 +49,15 @@ const PLATFORM_COLORS: Record<ProviderId, string> = {
       </a>
       <template v-else>
         <a
+          v-if="provider.dashboardUrl"
+          class="action dashboard"
+          :href="provider.dashboardUrl"
+          target="_blank"
+          rel="noopener"
+        >
+          DASHBOARD ↗
+        </a>
+        <a
           v-if="provider.needsReauth"
           class="action connect"
           :href="`/auth/${provider.id}/start`"
@@ -183,6 +192,14 @@ const PLATFORM_COLORS: Record<ProviderId, string> = {
 
 .action.connect:hover {
   color: var(--accent-hover);
+}
+
+.action.dashboard {
+  color: var(--text-dim);
+}
+
+.action.dashboard:hover {
+  color: var(--accent);
 }
 
 .action.disconnect {

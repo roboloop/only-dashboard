@@ -42,7 +42,11 @@ function routeFetch(routes: Record<string, unknown>) {
 describe('twitch fetchStatus', () => {
   it('reads the title from the channel and liveness from /streams', async () => {
     routeFetch({
-      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'Streamer' }] },
+      'https://api.twitch.tv/helix/users': {
+        // The login is deliberately not the display name lowercased: the
+        // dashboard url must follow the login.
+        data: [{ id: '42', display_name: 'Streamer', login: 'streamer_tv' }],
+      },
       'https://api.twitch.tv/helix/channels': {
         data: [
           {
@@ -66,12 +70,17 @@ describe('twitch fetchStatus', () => {
       streamTitle: 'Playing something',
       isLive: true,
       category: { id: '743', name: 'Chess', imageUrl: 'https://img/68x90.jpg' },
+      dashboardUrl: 'https://dashboard.twitch.tv/u/streamer_tv/stream-manager',
     })
   })
 
   it('reports offline when /streams returns nothing', async () => {
     routeFetch({
-      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'Streamer' }] },
+      'https://api.twitch.tv/helix/users': {
+        // The login is deliberately not the display name lowercased: the
+        // dashboard url must follow the login.
+        data: [{ id: '42', display_name: 'Streamer', login: 'streamer_tv' }],
+      },
       'https://api.twitch.tv/helix/channels': {
         data: [{ title: 'Offline title', game_id: '', game_name: '' }],
       },
@@ -117,7 +126,11 @@ describe('twitch categories and updates', () => {
 
   it('PATCHes the channel keyed by the token holder’s own id', async () => {
     const calls = routeFetch({
-      'https://api.twitch.tv/helix/users': { data: [{ id: '42', display_name: 'Streamer' }] },
+      'https://api.twitch.tv/helix/users': {
+        // The login is deliberately not the display name lowercased: the
+        // dashboard url must follow the login.
+        data: [{ id: '42', display_name: 'Streamer', login: 'streamer_tv' }],
+      },
       'https://api.twitch.tv/helix/channels': {},
     })
 
@@ -155,6 +168,7 @@ describe('kick fetchStatus', () => {
       streamTitle: 'Kick stream',
       isLive: true,
       category: { id: '5', name: 'Just Chatting', imageUrl: 'https://thumb.jpg' },
+      dashboardUrl: 'https://dashboard.kick.com/stream',
     })
   })
 
@@ -243,6 +257,8 @@ describe('vkvideo fetchStatus', () => {
       streamTitle: 'VK stream',
       isLive: true,
       category: { id: 'g1', name: 'Games', imageUrl: 'https://cover.jpg', kind: 'game' },
+      // Keyed by the channel url, not the nick.
+      dashboardUrl: 'https://live.vkvideo.ru/my-channel/studio',
     })
   })
 
@@ -273,6 +289,8 @@ describe('vkvideo fetchStatus', () => {
       streamTitle: null,
       isLive: false,
       category: null,
+      // No channel means no studio to link to.
+      dashboardUrl: null,
     })
   })
 

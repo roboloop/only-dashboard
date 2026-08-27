@@ -7,6 +7,12 @@ export interface ProviderStatus {
   streamTitle: string | null
   isLive: boolean
   category: Category | null
+  /**
+   * The platform's own broadcast console. Built here rather than in the browser
+   * because the URL is keyed by a slug (Twitch's `login`, VK's channel url),
+   * which is not the same string as `displayName`.
+   */
+  dashboardUrl: string | null
 }
 
 /**

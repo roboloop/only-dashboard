@@ -74,7 +74,13 @@ export const vkvideo: Provider = {
     if (!channelUrl) {
       // A VK account that has never streamed has no channel. That is a valid
       // state, not an error — report the identity and leave the title empty.
-      return { displayName: nick, streamTitle: null, isLive: false, category: null }
+      return {
+        displayName: nick,
+        streamTitle: null,
+        isLive: false,
+        category: null,
+        dashboardUrl: null,
+      }
     }
 
     const channel = await vkGet<VkChannel>(
@@ -88,6 +94,8 @@ export const vkvideo: Provider = {
       streamTitle: stream?.title || null,
       isLive: stream?.status === 'started',
       category: toCategory(stream?.category),
+      // The studio path takes the channel url, not the nick shown on the card.
+      dashboardUrl: `https://live.vkvideo.ru/${encodeURIComponent(channelUrl)}/studio`,
     }
   },
 
