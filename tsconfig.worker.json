@@ -1,0 +1,25 @@
+// TSConfig for the Cloudflare Worker (src/worker) and the types it shares with
+// the app (src/shared). Kept separate from tsconfig.app.json because the Worker
+// runs on the workerd runtime, not in a browser: pulling in the DOM lib here
+// would shadow the Workers versions of Request/Response/fetch with the DOM ones.
+{
+  "extends": "@tsconfig/node24/tsconfig.json",
+  "include": ["src/worker/**/*.ts", "src/shared/**/*.ts", "worker-configuration.d.ts"],
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+
+    // No "node": the Workers runtime types come from worker-configuration.d.ts,
+    // which is a global .d.ts and so is picked up via `include`, not `types`.
+    "types": [],
+    "lib": ["ESNext"],
+
+    "noUncheckedIndexedAccess": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
+    "noEmit": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.worker.tsbuildinfo"
+  }
+}
