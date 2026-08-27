@@ -29,7 +29,8 @@ export interface OAuthTokens {
 
 /**
  * The differences between the three platforms are all data, not code — see the
- * table in the README. Only `fetchStatus` is genuinely bespoke per provider.
+ * table in docs/ARCHITECTURE.md. Only `fetchStatus` is genuinely bespoke per
+ * provider.
  */
 export interface Provider {
   id: ProviderId

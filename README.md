@@ -1,81 +1,57 @@
 # only-dashboard
 
-Connect a streamer's **Twitch**, **Kick** and **VK Video Live** accounts and show each platform's
-current stream title. A Vue 3 SPA and a Hono API served by one Cloudflare Worker.
+**One box to set your stream title and category on Twitch, Kick and VK Video Live at the same time.**
 
-## How auth works
+[![CI](https://github.com/roboloop/only-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/roboloop/only-dashboard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The client secrets are real and the access tokens are credentials for the user's streaming accounts,
-so nothing sensitive is allowed near the browser:
+**Live at [only-dashboard.stream](https://only-dashboard.stream/)**
 
+## Why
+
+If you go live on more than one platform, you already know the routine: type the same stream title
+into Twitch, then into Kick, then into VK Video Live, then notice one of them still says what you
+were playing last Tuesday.
+
+only-dashboard is a single page that talks to all three. Connect your accounts once, type the title
+once, hit save, and every connected platform gets it.
+
+## What it does
+
+- **One title, everywhere.** Type it once; it's pushed to every platform you've connected.
+- **Categories, picked per platform.** Each platform runs its own catalog — a Twitch game doesn't
+  exist as the same thing on Kick — so you search once and click the right match for each platform.
+  Skip a platform and it's left alone.
+- **Live status cards.** Each platform shows whether you're live, its current title and its current
+  category, refreshing on its own every 30 seconds so a change made anywhere else shows up here.
+- **Reusable titles and categories.** Recent ones are kept for you, and anything you use regularly
+  can be pinned so it stays at the top.
+- **One platform's bad day stays there.** If a platform is down, rate-limiting you, or your token
+  expired, the error lands on that card — the other saves still go through.
+- **Connect and disconnect each platform on its own**, or sign out of everything at once.
+
+## Your accounts stay yours
+
+- Your browser never holds a platform token. It holds an anonymous session id and nothing else —
+  there is nothing in local storage to leak, and the page can't read your credentials because it
+  never receives them.
+- Access tokens are kept server-side, used to talk to the platforms, and never sent to the page.
+  There's a test in the suite that fails if a token ever appears in an API response.
+- Disconnecting a platform deletes its tokens, and actively revokes them with platforms that offer
+  a revocation endpoint.
+
+## Run it yourself
+
+You'll need Node (the version in [`.nvmrc`](.nvmrc)) and a developer app registered on each platform
+you want to connect.
+
+```sh
+npm install
+cp .dev.vars.example .dev.vars   # then fill in the client id/secret for each platform
+npm run dev                      # http://localhost:5173
 ```
-browser                     Worker                        KV
- cookie sid=<opaque>   ──▶  read session:<sid>  ────────▶  { connections: {
- HttpOnly, SameSite=Lax     attach Bearer                      twitch: {access,refresh,expiresAt},
- Secure when https          server-side                        kick:   {...} } }
-                            │
-                            └─▶ platform API ──▶ display fields only ──▶ /api/me
-```
 
-- **Secrets stay in the Worker.** Never in the bundle, never in a `VITE_*` var (those are inlined
-  into client JS at build time), never in the repo.
-- **Tokens never reach the browser.** `/api/me` returns display fields only. There is a test that
-  asserts the serialized response contains neither the access nor the refresh token.
-- **The PKCE verifier and OAuth `state` are server-side too**, in KV, short-TTL and single-use, so a
-  replayed callback URL fails.
-
-Reload-persistence follows from this rather than being bolted on: the cookie *is* the state, so
-there is nothing in `localStorage` to go stale and no token for client JS to leak.
-
-Two KV key shapes, both TTL'd so nothing needs manual cleanup:
-
-| Key | Holds | TTL |
-| --- | --- | --- |
-| `session:<sid>` | per-platform tokens | 30 days, extended on use |
-| `oauth:<state>` | one in-flight authorization (`provider`, `codeVerifier`) | 10 min, deleted on first use |
-
-`SameSite=Lax` is deliberate. The provider sends the user back via a top-level GET navigation, which
-Lax permits; `Strict` would withhold the cookie on exactly that request, so the session would look
-empty only on the callback.
-
-## The three platforms are not the same protocol
-
-"OAuth 2.0" varies enough between them that the differences are data on a `Provider` record
-(`src/worker/providers/`) rather than branches in the flow. Only `fetchStatus` is bespoke per
-platform; `src/worker/providers/oauth.ts` handles the rest for all three.
-
-| | Twitch | Kick | VK Video Live |
-| --- | --- | --- | --- |
-| Client auth | body params | body params | **HTTP Basic header** |
-| PKCE | no | **yes (S256)** | no |
-| Scope separator | space | space | **comma** |
-| `redirect_uri` on refresh | no | no | **required** |
-| Scopes requested | `channel:manage:broadcast` | `user:read channel:read channel:write` | `channel:stream:settings` |
-
-Reading a title needs no scopes anywhere; the requested scopes exist for *writing* the title and
-category back (`updateStream`). A token minted before the write scopes were requested still reads
-fine — `/api/me` flags it as `needsReauth` and the card offers Reconnect instead of a doomed save.
-
-The refresh column is the sharp edge: VK is the only one that needs `redirect_uri` when refreshing,
-and omitting it fails an hour later, not at connect time.
-
-### Endpoints
-
-| | Twitch | Kick | VK Video Live |
-| --- | --- | --- | --- |
-| Authorize | `id.twitch.tv/oauth2/authorize` | `id.kick.com/oauth/authorize` | `auth.live.vkvideo.ru/app/oauth2/authorize` |
-| Token | `id.twitch.tv/oauth2/token` | `id.kick.com/oauth/token` | `api.live.vkvideo.ru/oauth/server/token` |
-| Revoke | — | — | `api.live.vkvideo.ru/oauth/server/revoke` |
-| Title | `helix/channels?broadcaster_id=` → `title` | `public/v1/channels` (no params) → `stream_title` | `v1/current_user` → `v1/channel` → `stream.title` |
-
-Twitch needs `Client-Id` alongside the bearer token on every Helix call. Kick's channels endpoint
-called with no parameters returns the token holder's own channel, so it needs no identity lookup;
-VK has no such shortcut and takes two calls.
-
-## Redirect URIs
-
-Registered with each platform — note they are **not** under `/api`, so the Worker routes them
-explicitly before the SPA fallback:
+Register these callback URLs with the platforms' developer consoles:
 
 ```
 http://localhost:5173/auth/twitch/callback
@@ -83,164 +59,33 @@ http://localhost:5173/auth/kick/callback
 http://localhost:5173/auth/vkvideo/callback
 ```
 
-`redirect_uri` is derived from the incoming request's origin rather than hard-coded, so the same
-build works on localhost, on `wrangler dev` (port 8787) and on `workers.dev`. **Register the
-production callbacks with all three platforms before deploying.**
+You can connect just one platform and the rest of the app works fine — nothing requires all three.
 
-## Setup
+Deploying your own copy (Cloudflare KV setup, secrets, production callback URLs) is covered in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#setup).
 
-```sh
-npm install
+## Built with
 
-# 1. Create the KV namespace and paste both ids into wrangler.jsonc
-npx wrangler kv namespace create SESSIONS
-npx wrangler kv namespace create SESSIONS --preview
-npm run cf-typegen
+Vue 3 and Pinia on the front, [Hono](https://hono.dev/) on a single
+[Cloudflare Worker](https://developers.cloudflare.com/workers/) that serves both the page and the
+API, with sessions in Workers KV. There's no separate backend to run and no database to manage.
 
-# 2. Fill in .dev.vars (already created, gitignored, currently empty)
-```
+## Contributing
 
-`.dev.vars` needs the six credentials; `.dev.vars.example` lists the names. For production set the
-same six with `npx wrangler secret put <NAME>`.
+Bug reports and pull requests are welcome. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how
+the thing actually works — the OAuth differences between the three platforms, how sessions are
+stored, and the one Cloudflare routing rule that everything depends on. Worth a read before changing
+anything in `src/worker/`.
 
-Local `vite dev` and `wrangler dev` simulate KV, so the placeholder ids in `wrangler.jsonc` are
-enough to develop against — real ids are only needed to deploy.
-
-`wrangler.jsonc` is committed on purpose, KV ids included: namespace ids are resource identifiers,
-not credentials, and are inert without Cloudflare account auth. The actual secrets are the six OAuth
-values in `.dev.vars` (gitignored) and your Cloudflare API token — neither is in the repo.
-
-### Known dev-server quirk
-
-Editing `.dev.vars` or `wrangler.jsonc` **while `npm run dev` is running** can throw up a Vite error
-overlay:
-
-> Cannot read properties of null (reading 'invalidateTypeCache')
-
-It is harmless and self-clearing — dismiss it, or restart the dev server. `@cloudflare/vite-plugin`
-restarts Vite when either file changes, which resets `@vitejs/plugin-vue`'s lazily-resolved
-`compiler` to null, and the same file-change event can race into `handleHotUpdate` before the new
-instance's `buildStart` re-resolves it. Upstream has no null guard there as of `@vitejs/plugin-vue`
-6.0.8. It cannot affect a production build — `handleHotUpdate` only exists in dev — and
-`server.watch.ignored` is *not* the fix: the Cloudflare plugin needs that same watcher event to
-reload your secrets.
-
-## Request flow
-
-```
-request
-  │
-  ├─ path matches assets.run_worker_first  ──▶  Worker (src/worker/index.ts)
-  │    ("/auth/*", "/api/*")                      ├─ /auth/<p>/start     → 302 to the platform
-  │                                               ├─ /auth/<p>/callback  → exchange code, 302 to /
-  │                                               ├─ /api/me             → per-platform state
-  │                                               ├─ /api/stream/…       → title/category saves (fan-out)
-  │                                               ├─ /api/categories/…   → per-platform category search
-  │                                               ├─ /api/history…       → title/category history + pins
-  │                                               ├─ /api/auth/<p>/…     → disconnect, logout
-  │                                               ├─ /api/* (unmatched)  → JSON 404
-  │                                               └─ *                   → env.ASSETS
-  │
-  └─ everything else  ──▶  asset router ──▶ dist/client
-                             └─ no matching file? → index.html (SPA fallback)
-```
-
-**The asset router runs before the Worker.** This is the single most surprising thing in the setup
-and it is easy to get wrong. With `not_found_handling: "single-page-application"`, the asset layer
-answers any browser *navigation* to an unmatched path with `index.html` and the Worker is never
-invoked. Setting `main` does not change that.
-
-That is why `assets.run_worker_first` in `wrangler.jsonc` lists `/auth/*` and `/api/*`. Without it,
-`/auth/<provider>/start` and the provider's redirect back to `/auth/<provider>/callback` are both
-served the SPA, and the entire OAuth flow dies with a vue-router "No match found" in the console.
-
-**Any new Worker route reachable by a top-level navigation must be added to `run_worker_first`.**
-`src/__tests__/routing-config.spec.ts` enforces this for every provider's start and callback path.
-
-The trap is that this is invisible to `curl` and to the Hono tests. The discriminator is the
-`Sec-Fetch-Mode: navigate` header, which only a real top-level navigation sends — `fetch`, XHR and
-plain `curl` all reach the Worker fine. To test a route the way a browser hits it:
+Before opening a PR:
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' -H 'Sec-Fetch-Mode: navigate' \
-  http://localhost:5173/auth/twitch/start     # 302, not 200
+npm run type-check && npm run lint && npm run test:unit
 ```
 
-The Worker still ends with `app.all('*', …)` delegating to `env.ASSETS`, which covers paths routed to
-it by `run_worker_first` that none of its routes match. The `/api/*` JSON-404 catch-all matters
-separately: without it an unknown API path falls through to the SPA and a `fetch()` expecting JSON
-receives HTML.
+Adding a fourth platform is mostly one new file in `src/worker/providers/` — see
+[Extending](docs/ARCHITECTURE.md#extending).
 
-`/api/me` fans out to the connected platforms in parallel and each result is independent — one
-platform being down or token-expired renders as an error on that card, not a failed page. Tokens are
-refreshed on demand: near expiry, or once on a 401, after which a failed refresh drops the connection
-so the card offers Connect again.
+## License
 
-## Layout
-
-```
-src/
-  shared/types.ts        the contract — by construction, only what the browser may see
-  worker/
-    index.ts             routes
-    session.ts           cookie + KV session and OAuth transaction storage
-    history.ts           KV-backed title/category history with pinning
-    status.ts            tokens → display state, with refresh-on-demand (withFreshTokens)
-    crypto.ts            base64url, random tokens, PKCE S256
-    env.ts               bindings + the six secrets
-    providers/           oauth.ts (shared flow) + twitch/kick/vkvideo
-  stores/
-    session.ts           Pinia store over /api/me
-    stream.ts            title/category drafts, per-platform search, history
-  components/
-    ProviderCard.vue     one platform's status micro-card
-    TitleBlock.vue       shared title editor + history
-    CategoryBlock.vue    category search + per-platform selectors + recents
-    CategorySelector.vue one platform's candidate column
-  views/DashboardView.vue
-```
-
-## Commands
-
-```sh
-npm run dev          # http://localhost:5173 — Vite HMR with the real Worker in workerd behind it
-npm run type-check   # vue-tsc across the app, node, vitest and worker projects
-npm run lint         # oxlint + eslint
-npm run test:unit    # vitest
-npm run preview      # production build served by wrangler dev
-npm run cf-typegen   # regenerate worker-configuration.d.ts after editing wrangler.jsonc
-npm run deploy       # build + wrangler deploy
-```
-
-### The tsconfig split
-
-Four TS projects, and the split is load-bearing. Worker code must never be compiled with the DOM lib:
-`Request`, `Response` and `fetch` exist in both lib sets with different shapes, and mixing them
-produces errors that don't look like the actual cause.
-
-- `tsconfig.app.json` — the Vue app, DOM libs, **excludes `src/worker/**`**
-- `tsconfig.worker.json` — Worker + `src/shared`, workerd globals, no DOM
-- `tsconfig.vitest.json` — jsdom tests, **excludes `src/worker/**`** (worker tests belong to the worker project)
-- `tsconfig.node.json` — the config files themselves
-
-Anything both sides import belongs in `src/shared/`.
-
-## Deploying
-
-Cloudflare Workers Builds — pushes to `main` deploy, PRs get preview URLs. Dashboard setup:
-**Workers & Pages → Create → Import a repository**, build command `npm run build`, deploy command
-`npx wrangler deploy`, root `/`. `.nvmrc` pins Node 24 for the builder.
-
-Before the first deploy: real KV ids in `wrangler.jsonc`, the six secrets via `wrangler secret put`,
-and the production callback URLs registered with all three platforms.
-
-## Extending
-
-Writing the title and category back is implemented: `updateStream` and `searchCategories` are one
-method per provider behind the same registry (Kick `channel:write`, Twitch
-`channel:manage:broadcast`, VK `POST /v1/channel/stream/edit` with `channel:stream:settings`), and
-`PATCH /api/stream/title` / `PATCH /api/stream/category` fan out to every connected platform with
-per-platform results — one platform failing never blocks the others.
-
-Adding a platform is a new file in `src/worker/providers/` plus an entry in its registry — the flow
-itself needs no changes unless the platform differs along some axis beyond the four in the table.
+[MIT](LICENSE) © roboloop
