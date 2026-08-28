@@ -44,6 +44,9 @@ const ERRORS: Record<string, string> = {
   exchange_failed: 'Could not complete the connection. Please try again.',
 }
 
+/** Where the page's own code lives; linked from the footer. */
+const SOURCE_URL = 'https://github.com/roboloop/only-dashboard'
+
 const syncNote = computed(() => {
   if (session.loading || !session.fetchedAt) return 'syncing…'
   return `synced ${relativeTime(session.fetchedAt, now.value)} ago`
@@ -104,8 +107,14 @@ async function disconnect(id: ProviderId) {
       <TitleBlock class="ruled" />
       <CategoryBlock class="ruled" />
 
-      <footer v-if="session.connectedCount > 0" class="foot">
-        <button type="button" class="signout" @click="session.logout()">
+      <footer class="foot">
+        <a class="source" :href="SOURCE_URL" target="_blank" rel="noopener">SOURCE ↗</a>
+        <button
+          v-if="session.connectedCount > 0"
+          type="button"
+          class="signout"
+          @click="session.logout()"
+        >
           SIGN OUT OF EVERYTHING
         </button>
       </footer>
@@ -171,6 +180,20 @@ async function disconnect(id: ProviderId) {
   margin: 26px 26px 0;
   padding-top: 22px;
   border-top: 1px solid var(--border-rule);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.source {
+  font: 500 var(--fs-micro) / 1 var(--font-sans);
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+.source:hover {
+  color: var(--accent);
 }
 
 .signout {

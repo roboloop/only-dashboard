@@ -111,6 +111,17 @@ describe('DashboardView', () => {
     expect(wrapper.findAll('a.dashboard')).toHaveLength(1)
   })
 
+  it('links to the source repository even with nothing connected', async () => {
+    stubApi([providerState()])
+    const wrapper = await mountView()
+
+    const link = wrapper.get('a.source')
+    expect(link.attributes('href')).toBe('https://github.com/roboloop/only-dashboard')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.text()).toContain('SOURCE')
+    expect(wrapper.text()).not.toContain('SIGN OUT')
+  })
+
   it('pre-fills the title input with the current shared title', async () => {
     stubApi([providerState({ connected: true, streamTitle: 'Current title' })])
     const wrapper = await mountView()
